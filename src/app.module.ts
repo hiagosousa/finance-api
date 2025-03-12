@@ -6,6 +6,7 @@ import { EarningsModule } from './earnings/earnings.module';
 import { ConfigModule } from '@nestjs/config';
 import { UserModule } from './user/user.module';
 import { FamilyModule } from './family/family.module';
+import { AuthGuard } from './guards/auth.guard';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { FamilyModule } from './family/family.module';
     FamilyModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, AuthGuard],
+  exports: [AuthGuard],
 })
 export class AppModule {}

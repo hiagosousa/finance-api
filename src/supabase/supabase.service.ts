@@ -1,23 +1,31 @@
 import { Injectable, HttpException, HttpStatus, Inject } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { UserDto } from 'src/user/dto/user.dto';
+import { IUser } from 'src/user/dto/user.dto';
 
 export interface SignInResponse {
-  user: UserDto;
+  user: IUser;
   accessToken: string | null;
   refreshToken: string | null;
 }
 
 @Injectable()
 export class SupabaseService {
-  private supabase: SupabaseClient;
-
   constructor(
     @Inject('SUPABASE_CONFIG')
     private config: { url: string; key: string },
   ) {
     this.validateConfig();
-    this.supabase = createClient(this.config.url, this.config.key);
+  }
+
+  private createSupabaseClient(token: string): SupabaseClient {
+    if (!token) return createClient(this.config.url, this.config.key);
+    return createClient(this.config.url, this.config.key, {
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    });
   }
 
   private validateConfig(): void {
@@ -28,94 +36,134 @@ export class SupabaseService {
       );
     }
   }
+  async findAll(tableName: string, token: string) {
+    const supabase = this.createSupabaseClient(token);
+    const { data, error } = await supabase.from(tableName).select('*');
 
-  getClient() {
-    return this.supabase;
+    if (error) {
+      throw new HttpException(
+        `Erro ao buscar dados da tabela ${tableName}: ${error.message}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return data;
   }
 
-  async findAll(tableName: string) {
-    try {
-      const { data, error } = await this.getClient()
-        .from(tableName)
-        .select('*');
+  async signUp(
+    email: string,
+    password: string,
+    userData: Partial<IUser>,
+  ): Promise<SignInResponse> {
+    // Check if the email is already registered
+    const supabase = this.createSupabaseClient('');
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    });
 
-      if (error) {
-        throw new HttpException(
-          `Erro ao buscar dados da tabela ${tableName}: ${error.message}`,
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      return data;
-    } catch (error) {
+    console.log('Result:', data);
+    console.log('Error:', error);
+
+    if (error) {
       throw new HttpException(
-        'Erro interno ao buscar dados',
+        `Erro no cadastro: ${error.message}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (!data.user) {
+      throw new HttpException(
+        'Erro no cadastro: verifique seu e-mail para confirmar a conta.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const userId = data.user.id;
+
+    // Insere os dados do usuário na tabela 'users'
+    const { error: insertError } = await supabase
+      .from('users')
+      .insert({ ...userData, id: userId });
+
+    console.log('Insert Error:', insertError);
+
+    if (insertError) {
+      throw new HttpException(
+        `Erro ao salvar dados do usuário: ${insertError.message}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+
+    const advancedUser = await this.getUserById(
+      userId,
+      data.session?.access_token,
+    );
+
+    return {
+      user: {
+        id: userId,
+        email: data.user.email,
+        name: advancedUser?.name || '',
+        createdAt: data.user.created_at,
+        updatedAt: data.user.updated_at,
+      },
+      accessToken: data.session?.access_token || null,
+      refreshToken: data.session?.refresh_token || null,
+    };
   }
 
   async signIn(
     emailAddress: string,
     password: string,
   ): Promise<SignInResponse> {
-    try {
-      const { data, error } = await this.supabase.auth.signInWithPassword({
-        email: emailAddress,
-        password,
-      });
+    const supabase = this.createSupabaseClient('');
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: emailAddress,
+      password,
+    });
 
-      if (error) {
-        switch (error.code) {
-          case 'invalid_credentials':
-            throw new HttpException(
-              'Credenciais inválidas',
-              HttpStatus.UNAUTHORIZED,
-            );
-          case 'user_not_found':
-            throw new HttpException(
-              'Usuário não encontrado',
-              HttpStatus.NOT_FOUND,
-            );
-          default:
-            throw new HttpException(
-              `Erro de autenticação: ${error.message}`,
-              HttpStatus.BAD_REQUEST,
-            );
-        }
-      }
-
-      const { user, session } = data;
-      const advancedUser = await this.getUserById(user.id);
-
-      return {
-        user: {
-          id: user.id,
-          email: user.email,
-          name: advancedUser?.name || '',
-          createdAt: user.created_at,
-          updatedAt: user.updated_at,
-        },
-        accessToken: session?.access_token,
-        refreshToken: session?.refresh_token,
-      };
-    } catch (error) {
+    if (error) {
       throw new HttpException(
-        error.message || 'Erro de autenticação',
-        error.status || HttpStatus.INTERNAL_SERVER_ERROR,
+        `Erro de autenticação: ${error.message}`,
+        HttpStatus.UNAUTHORIZED,
       );
     }
+
+    if (!data.user) {
+      throw new HttpException(
+        'Erro de autenticação: usuário não encontrado.',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const advancedUser = await this.getUserById(
+      data.user.id,
+      data.session?.access_token,
+    );
+
+    return {
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        name: advancedUser?.name || '',
+        createdAt: data.user.created_at,
+        updatedAt: data.user.updated_at,
+      },
+      accessToken: data.session?.access_token || null,
+      refreshToken: data.session?.refresh_token || null,
+    };
   }
 
-  private async getUserById(userId: string): Promise<UserDto | null> {
-    const { data, error } = await this.supabase
+  private async getUserById(
+    userId: string,
+    token: string,
+  ): Promise<IUser | null> {
+    const supabase = this.createSupabaseClient(token);
+    const { data, error } = await supabase
       .from('users')
       .select('*')
       .eq('id', userId)
       .single();
-
-    if (!data) {
-      return null;
-    }
 
     if (error) {
       throw new HttpException(
@@ -124,6 +172,6 @@ export class SupabaseService {
       );
     }
 
-    return data[0];
+    return data;
   }
 }

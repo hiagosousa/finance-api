@@ -6,10 +6,13 @@ import {
   Patch,
   Param,
   Delete,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { CreateSupabaseDto } from './dto/create-supabase.dto';
 import { UpdateSupabaseDto } from './dto/update-supabase.dto';
+import { AuthGuard } from 'src/guards/auth.guard';
 
 @Controller('supabase')
 export class SupabaseController {
@@ -20,9 +23,13 @@ export class SupabaseController {
   //   return this.supabaseService.create(createSupabaseDto);
   // }
 
+  @UseGuards(AuthGuard)
   @Get()
-  findAll(@Param('tableName') tableName: string) {
-    return this.supabaseService.findAll(tableName);
+  findAll(@Param('tableName') tableName: string, @Request() req: Request) {
+    return this.supabaseService.findAll(
+      tableName,
+      req.headers['authorization']?.split(' ')[1],
+    );
   }
 
   // @Get(':id')
